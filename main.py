@@ -1,7 +1,9 @@
 import os
 import logging
 from dotenv import load_dotenv
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -29,6 +31,18 @@ ALLOWED_GROUP_IDS = os.getenv("ALLOWED_GROUP_IDS", "")
 
 # Bot 用戶名（啟動時會自動取得）
 BOT_USERNAME = None
+# Bot 啟動時間
+BOT_START_TIME = None
+
+
+def get_admin_id() -> int | None:
+    """取得管理員 ID"""
+    if ADMIN_USER_ID:
+        try:
+            return int(ADMIN_USER_ID.strip())
+        except ValueError:
+            return None
+    return None
 
 
 def get_allowed_users() -> set[int]:
@@ -154,6 +168,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /help - 顯示此幫助訊息
 /menu - 顯示功能選單
 /status - 查看 Bot 狀態
+/ping - 檢查 Bot 是否在線
 
 **功能說明：**
 • 直接輸入文字訊息，Bot 會進行處理後回應
@@ -197,6 +212,23 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(status_text, parse_mode="HTML")
 
 
+async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """處理 /ping 指令 - 快速檢查 Bot 是否在線"""
+    # 計算運行時間
+    if BOT_START_TIME:
+        uptime = datetime.now() - BOT_START_TIME
+        hours, remainder = divmod(int(uptime.total_seconds()), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = f"{hours}h {minutes}m {seconds}s"
+    else:
+        uptime_str = "未知"
+
+    await update.message.reply_text(
+        f"🟢 Pong! Bot 運行中\n"
+        f"⏱️ 已運行: {uptime_str}"
+    )
+
+
 # ============ 訊息處理 ============
 
 
@@ -226,6 +258,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     logger.info(f"收到來自 {user.first_name} ({user.id}) 的訊息: {text}")
 
+    # 顯示「正在輸入...」提示
+    await context.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
+
     # 這裡可以加入訊息處理邏輯
     # 例如：呼叫 AI API、執行特定任務等
     processed_response = process_message(text)
@@ -248,8 +283,6 @@ def process_message(text: str) -> str:
         return "不客氣！隨時為你服務！ 🙏"
 
     if "時間" in text or "time" in text_lower:
-        from datetime import datetime
-
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return f"🕐 現在時間: {now}"
 
@@ -380,7 +413,8 @@ async def show_help_inline(query) -> None:
         "/start - 開始\n"
         "/help - 幫助\n"
         "/menu - 選單\n"
-        "/status - 狀態\n\n"
+        "/status - 狀態\n"
+        "/ping - 檢測在線\n\n"
         "直接輸入訊息即可與 Bot 互動！",
         reply_markup=reply_markup,
         parse_mode="Markdown",
@@ -417,10 +451,28 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def post_init(application: Application) -> None:
     """Bot 啟動後的初始化"""
-    global BOT_USERNAME
+    global BOT_USERNAME, BOT_START_TIME
     bot = await application.bot.get_me()
     BOT_USERNAME = bot.username
+    BOT_START_TIME = datetime.now()
     logger.info(f"Bot 用戶名: @{BOT_USERNAME}")
+
+    # 通知管理員 Bot 已啟動
+    admin_id = get_admin_id()
+    if admin_id:
+        try:
+            await application.bot.send_message(
+                chat_id=admin_id,
+                text=(
+                    f"🟢 <b>Bot 已上線</b>\n\n"
+                    f"🤖 @{BOT_USERNAME}\n"
+                    f"🕐 {BOT_START_TIME.strftime('%Y-%m-%d %H:%M:%S')}"
+                ),
+                parse_mode="HTML",
+            )
+            logger.info(f"已通知管理員 {admin_id} Bot 啟動")
+        except Exception as e:
+            logger.warning(f"無法通知管理員: {e}")
 
 
 def main() -> None:
@@ -438,6 +490,7 @@ def main() -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("menu", menu_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("ping", ping_command))
 
     # 註冊按鈕回調處理器
     application.add_handler(CallbackQueryHandler(button_callback))

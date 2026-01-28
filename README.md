@@ -4,13 +4,17 @@
 
 ## 功能特色
 
-- **指令處理**：`/start`、`/help`、`/menu`、`/status`
+- **指令處理**：`/start`、`/help`、`/menu`、`/status`、`/ping`
 - **互動式按鈕**：使用 InlineKeyboardButton 建立選單
 - **權限控制**：
   - 用戶白名單（私人對話）
   - 群組白名單（群組對話）
 - **群組支援**：需 @Bot 或回覆 Bot 才會回應（避免打擾）
 - **訊息處理**：可擴展的訊息處理邏輯（預留 AI 整合接口）
+- **在線狀態**：
+  - `/ping` 快速檢測 Bot 是否在線
+  - 啟動時自動通知管理員
+  - 處理訊息時顯示「正在輸入...」提示
 
 ## 專案結構
 
@@ -58,7 +62,7 @@ TELEGRAM_BOT_TOKEN=your_bot_token_here
 # 留空 = 允許所有人
 ALLOWED_USER_IDS=123456789,987654321
 
-# 選填：管理員 ID（預留未來使用）
+# 選填：管理員 ID（Bot 啟動時會收到通知）
 ADMIN_USER_ID=123456789
 
 # 選填：群組白名單
@@ -88,6 +92,7 @@ uv run main.py
 # - 讀取環境變數
 
 # ============ 權限控制函式 ============
+# - get_admin_id()           # 取得管理員 ID
 # - get_allowed_users()      # 取得用戶白名單
 # - get_allowed_groups()     # 取得群組白名單
 # - is_user_allowed()        # 檢查用戶權限
@@ -100,6 +105,7 @@ uv run main.py
 # - help_command()           # /help 指令
 # - menu_command()           # /menu 指令
 # - status_command()         # /status 指令
+# - ping_command()           # /ping 指令（檢測在線）
 
 # ============ 訊息處理 ============
 # - handle_message()         # 處理文字訊息
@@ -118,7 +124,7 @@ uv run main.py
 # - error_handler()          # 統一錯誤處理
 
 # ============ 主程式 ============
-# - post_init()              # Bot 啟動後初始化
+# - post_init()              # Bot 啟動後初始化（通知管理員）
 # - main()                   # 程式入口
 ```
 
