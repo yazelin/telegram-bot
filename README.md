@@ -195,13 +195,19 @@ sudo systemctl stop telegram-bot
 
 Bot 會使用 nanobanana MCP 工具生成圖片並發送。
 
+### 回覆上下文
+
+回覆（Reply）Bot 或其他訊息時，AI 會看到被回覆的內容：
+- **文字**：回覆的文字會作為上下文傳給 AI
+- **圖片**：回覆的圖片會下載後傳給 AI 處理（例如「把這張圖變成黑白」）
+
 ### 網頁搜尋
 
 發送類似以下訊息：
 - 「今天台北天氣如何」
 - 「搜尋 Python 教學」
 
-Bot 會使用 WebSearch 工具搜尋並回答。
+Bot 會使用 WebSearch 工具搜尋並回答。AI 回應中的圖片網址（.jpg/.png 等）會自動下載並傳送給用戶。
 
 ## 群組使用
 
@@ -245,6 +251,7 @@ application.add_handler(CommandHandler("mycommand", my_command))
 | python-telegram-bot 22.x | Telegram Bot API |
 | Claude CLI | AI 對話處理 |
 | nanobanana-py | 圖片生成（MCP 工具）|
+| httpx | 圖片 URL 下載 |
 | uv | 套件管理 |
 
 ## 參考資源

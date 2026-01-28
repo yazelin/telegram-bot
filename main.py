@@ -3,6 +3,7 @@ import logging
 from dotenv import load_dotenv
 from datetime import datetime
 import re
+import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot, InputFile
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -262,6 +263,50 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 # ============ 訊息處理 ============
 
+# 回覆圖片暫存目錄
+REPLY_IMAGE_DIR = "/tmp/telegram-bot-cli/reply-images"
+os.makedirs(REPLY_IMAGE_DIR, exist_ok=True)
+
+
+async def get_reply_context(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    """取得回覆訊息的上下文
+
+    Returns:
+        上下文字串，例如 "[回覆訊息: ...]\n" 或 "[回覆圖片: path]"
+        如果沒有回覆則回傳 None
+    """
+    reply = update.message.reply_to_message
+    if not reply:
+        return None
+
+    parts = []
+
+    # 回覆的圖片
+    if reply.photo:
+        try:
+            # 取得最大尺寸的圖片
+            photo = reply.photo[-1]
+            file = await context.bot.get_file(photo.file_id)
+
+            # 下載到暫存目錄
+            file_path = os.path.join(REPLY_IMAGE_DIR, f"{photo.file_unique_id}.jpg")
+            await file.download_to_drive(file_path)
+
+            parts.append(f"[回覆圖片: {file_path}]")
+            logger.info(f"下載回覆圖片: {file_path}")
+        except Exception as e:
+            logger.warning(f"下載回覆圖片失敗: {e}")
+
+    # 回覆的文字（圖片的 caption 或文字訊息）
+    reply_text = reply.text or reply.caption
+    if reply_text:
+        # 截斷過長的文字
+        if len(reply_text) > 500:
+            reply_text = reply_text[:500] + "..."
+        parts.append(f"[回覆訊息: {reply_text}]")
+
+    return "\n".join(parts) if parts else None
+
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """處理一般文字訊息"""
@@ -281,13 +326,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if not is_mentioned(update, context):
             return
 
-    text = update.message.text
+    text = update.message.text or ""
 
     # 移除 @Bot 的部分
     if BOT_USERNAME:
         text = text.replace(f"@{BOT_USERNAME}", "").strip()
 
     logger.info(f"收到來自 {user.first_name} ({user.id}) 的訊息: {text}")
+
+    # 處理回覆訊息的上下文
+    reply_context = await get_reply_context(update, context)
+    if reply_context:
+        text = f"{reply_context}\n{text}"
 
     # 顯示「正在輸入...」提示
     await context.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
@@ -347,16 +397,21 @@ def extract_image_paths_from_tool_calls(tool_calls: list) -> list[str]:
             else:
                 output_data = output
 
-            # 格式: [{"text": "{...}", "type": "text"}]
+            # 格式1: [{"text": "{...}", "type": "text"}]
             if isinstance(output_data, list) and len(output_data) > 0:
                 for item in output_data:
                     if item.get("type") == "text" and item.get("text"):
                         inner_data = json.loads(item["text"])
                         if inner_data.get("success") and inner_data.get("generatedFiles"):
                             generated_files.extend(inner_data["generatedFiles"])
-            # 格式: {"success": true, "generatedFiles": [...]}
             elif isinstance(output_data, dict):
-                if output_data.get("success") and output_data.get("generatedFiles"):
+                # 格式2: {"result": "{...json...}"}
+                if "result" in output_data:
+                    result_data = json.loads(output_data["result"])
+                    if result_data.get("success") and result_data.get("generatedFiles"):
+                        generated_files.extend(result_data["generatedFiles"])
+                # 格式3: {"success": true, "generatedFiles": [...]}
+                elif output_data.get("success") and output_data.get("generatedFiles"):
                     generated_files.extend(output_data["generatedFiles"])
 
         except (json.JSONDecodeError, KeyError, TypeError) as e:
@@ -371,6 +426,59 @@ def extract_image_paths_from_tool_calls(tool_calls: list) -> list[str]:
             unique_paths.append(p)
 
     return unique_paths
+
+
+def extract_image_urls(text: str) -> list[str]:
+    """從文字中提取圖片 URL"""
+    pattern = r'https?://[^\s\n\[\]()<>\"\']+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s\n\[\]()<>\"\']*)?'
+    urls = re.findall(pattern, text, re.IGNORECASE)
+    # 去重
+    seen = set()
+    unique = []
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            unique.append(url)
+    return unique
+
+
+async def download_image_from_url(url: str) -> str | None:
+    """下載圖片 URL 到暫存目錄，回傳本地路徑"""
+    download_dir = "/tmp/telegram-bot-cli/downloaded-images"
+    os.makedirs(download_dir, exist_ok=True)
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                logger.warning(f"下載圖片失敗 HTTP {resp.status_code}: {url}")
+                return None
+
+            content_type = resp.headers.get("content-type", "")
+            if not content_type.startswith("image/"):
+                logger.warning(f"非圖片內容 {content_type}: {url}")
+                return None
+
+            # 從 URL 取得副檔名
+            ext = ".jpg"
+            for e in [".png", ".gif", ".webp", ".jpeg"]:
+                if e in url.lower():
+                    ext = e
+                    break
+
+            import hashlib
+            filename = hashlib.md5(url.encode()).hexdigest()[:12] + ext
+            file_path = os.path.join(download_dir, filename)
+
+            with open(file_path, "wb") as f:
+                f.write(resp.content)
+
+            logger.info(f"下載圖片成功: {url} -> {file_path}")
+            return file_path
+
+    except Exception as e:
+        logger.warning(f"下載圖片異常: {url}: {e}")
+        return None
 
 
 def extract_image_paths_from_text(text: str) -> list[str]:
@@ -511,12 +619,26 @@ async def process_message_with_ai(text: str, chat_id: int, bot: Bot) -> tuple[st
     if result.success:
         response = result.message
 
+        # Debug: 記錄 tool_calls 資訊
+        if result.tool_calls:
+            for tc in result.tool_calls:
+                logger.info(f"Tool: {tc.name}, output 長度: {len(tc.output) if tc.output else 0}, output 前200字: {(tc.output or '')[:200]}")
+
         # 從 tool_calls 提取圖片路徑（優先）
         image_paths = extract_image_paths_from_tool_calls(result.tool_calls)
 
-        # 備用：從回應文字提取
+        # 備用：從回應文字提取本地圖片路徑
         if not image_paths:
             image_paths = extract_image_paths_from_text(response)
+
+        # 從回應文字提取圖片 URL 並下載
+        image_urls = extract_image_urls(response)
+        if image_urls:
+            logger.info(f"偵測到 {len(image_urls)} 個圖片 URL，開始下載...")
+            for url in image_urls[:5]:  # 最多下載 5 張
+                local_path = await download_image_from_url(url)
+                if local_path:
+                    image_paths.append(local_path)
 
         if image_paths:
             logger.info(f"提取到 {len(image_paths)} 張圖片: {image_paths}")
