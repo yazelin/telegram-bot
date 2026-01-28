@@ -1,290 +1,258 @@
-# Telegram Bot 範例專案
+# Telegram Bot
 
-一個使用 Python + python-telegram-bot 建立的 Telegram Bot 範例專案，展示基本的 Bot 開發模式，包含指令處理、按鈕互動、權限控制等功能。
+使用 Python + python-telegram-bot + Claude CLI 建立的智能 Telegram Bot，支援 AI 對話、圖片生成等功能。
 
 ## 功能特色
 
-- **指令處理**：`/start`、`/help`、`/menu`、`/status`、`/ping`
-- **互動式按鈕**：使用 InlineKeyboardButton 建立選單
-- **權限控制**：
-  - 用戶白名單（私人對話）
-  - 群組白名單（群組對話）
-- **群組支援**：需 @Bot 或回覆 Bot 才會回應（避免打擾）
-- **訊息處理**：可擴展的訊息處理邏輯（預留 AI 整合接口）
-- **在線狀態**：
-  - `/ping` 快速檢測 Bot 是否在線
-  - 啟動時自動通知管理員
-  - 處理訊息時顯示「正在輸入...」提示
+- **AI 對話**：整合 Claude CLI，支援智能對話
+- **圖片生成**：透過 MCP 工具（nanobanana）生成圖片
+- **即時通知**：AI 處理時顯示 Tool 執行狀態
+- **權限控制**：用戶白名單、群組白名單
+- **群組支援**：需 @Bot 或回覆 Bot 才會回應
+- **服務管理**：支援 systemd 服務安裝
 
 ## 專案結構
 
 ```
 telegram-bot/
-├── main.py           # 主程式（所有邏輯）
-├── .env              # 環境變數（不納入版控）
-├── .env.example      # 環境變數範例
-├── .gitignore        # Git 忽略設定
-├── pyproject.toml    # 專案設定（uv 套件管理）
-├── uv.lock           # 依賴鎖定檔
-└── README.md         # 本文件
+├── main.py              # 主程式
+├── services/
+│   └── claude_agent.py  # Claude CLI 整合
+├── scripts/
+│   ├── start.sh             # 啟動腳本
+│   ├── install-service.sh   # 安裝 systemd 服務
+│   └── uninstall-service.sh # 卸載服務
+├── .env                 # 環境變數（不納入版控）
+├── .env.example         # 環境變數範例
+├── .mcp.json            # MCP 工具配置（不納入版控）
+├── .mcp.json.example    # MCP 配置範例
+├── pyproject.toml       # 專案設定
+└── README.md            # 本文件
 ```
 
 ## 快速開始
 
-### 1. 建立 Bot
+### 1. 建立 Telegram Bot
 
-1. 在 Telegram 中找到 [@BotFather](https://t.me/BotFather)
+1. 在 Telegram 找 [@BotFather](https://t.me/BotFather)
 2. 發送 `/newbot` 建立新 Bot
-3. 記下取得的 **Bot Token**
+3. 記下 **Bot Token**
+4. 發送 `/setprivacy` → 選擇 Bot → `Disable`（允許收到群組訊息）
 
-### 2. 安裝專案
+### 2. 安裝依賴
 
 ```bash
-# 進入專案目錄
-cd ~/SDD/telegram-bot
+cd telegram-bot
 
-# 複製環境變數範例
-cp .env.example .env
+# 安裝 uv（如果還沒有）
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 編輯 .env，填入 Bot Token
-nano .env
+# 安裝依賴
+uv sync
 ```
 
 ### 3. 設定環境變數
 
-編輯 `.env` 檔案：
+```bash
+cp .env.example .env
+nano .env
+```
+
+編輯 `.env`：
 
 ```bash
-# 必填：Bot Token
+# ============ Telegram 設定 ============
+
+# Bot Token（必填）
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 
-# 選填：用戶白名單（私人對話限制）
+# 用戶白名單（選填，逗號分隔）
 # 留空 = 允許所有人
-ALLOWED_USER_IDS=123456789,987654321
+ALLOWED_USER_IDS=123456789
 
-# 選填：管理員 ID（Bot 啟動時會收到通知）
+# 管理員 ID（選填，Bot 啟動時會收到通知）
 ADMIN_USER_ID=123456789
 
-# 選填：群組白名單
+# 群組白名單（選填，逗號分隔）
 # 留空 = 不允許任何群組
 ALLOWED_GROUP_IDS=-1001234567890
+
+# ============ AI 設定 ============
+
+# 是否啟用 AI
+AI_ENABLED=true
+
+# AI 模型（opus, sonnet, haiku）
+AI_MODEL=sonnet
+
+# 是否顯示 Tool 執行通知
+AI_NOTIFY_TOOLS=true
+
+# System Prompt
+AI_SYSTEM_PROMPT=你是一個友善的助手。請用繁體中文回答。
+
+# 允許的工具（逗號分隔）
+AI_ALLOWED_TOOLS=WebSearch,WebFetch,Read
+
+# ============ MCP 工具設定 ============
+
+# Nanobanana 圖片生成（使用 Gemini API）
+NANOBANANA_GEMINI_API_KEY=your_gemini_api_key_here
+NANOBANANA_MODEL=gemini-3-pro-image-preview
 ```
 
-### 4. 啟動 Bot
+### 4. 設定 MCP 工具（選填）
+
+如需使用圖片生成等 MCP 工具：
 
 ```bash
-uv run main.py
+cp .mcp.json.example .mcp.json
+nano .mcp.json
 ```
 
-### 5. 取得 ID
+編輯 `.mcp.json`，將路徑改為你的專案路徑：
+
+```json
+{
+  "mcpServers": {
+    "nanobanana": {
+      "command": "bash",
+      "args": [
+        "-c",
+        "set -a && source /path/to/telegram-bot/.env && set +a && uvx nanobanana-py"
+      ]
+    }
+  }
+}
+```
+
+### 5. 啟動 Bot
+
+```bash
+# 手動啟動
+./scripts/start.sh
+
+# 或安裝為系統服務（開機自動啟動）
+./scripts/install-service.sh
+```
+
+### 6. 取得 ID
 
 - **用戶 ID**：私訊 Bot 發送 `/status`
 - **群組 ID**：將 Bot 加入群組後發送 `/status`
 
-## 程式碼架構說明
+## 服務管理
 
-### main.py 結構
+### 安裝服務
 
-```python
-# ============ 環境設定 ============
-# - 載入 .env
-# - 設定日誌
-# - 讀取環境變數
-
-# ============ 權限控制函式 ============
-# - get_admin_id()           # 取得管理員 ID
-# - get_allowed_users()      # 取得用戶白名單
-# - get_allowed_groups()     # 取得群組白名單
-# - is_user_allowed()        # 檢查用戶權限
-# - is_group_allowed()       # 檢查群組權限
-# - is_mentioned()           # 檢查是否被 @提及
-# - check_permission()       # 統一權限檢查
-
-# ============ 指令處理 ============
-# - start()                  # /start 指令
-# - help_command()           # /help 指令
-# - menu_command()           # /menu 指令
-# - status_command()         # /status 指令
-# - ping_command()           # /ping 指令（檢測在線）
-
-# ============ 訊息處理 ============
-# - handle_message()         # 處理文字訊息
-# - process_message()        # 訊息處理邏輯（可擴展）
-
-# ============ 按鈕回調處理 ============
-# - button_callback()        # 統一處理按鈕點擊
-# - show_main_menu()         # 顯示主選單
-# - show_menu_inline()       # 顯示功能選單
-# - show_about()             # 顯示關於
-# - show_settings()          # 顯示設定
-# - show_help_inline()       # 顯示幫助
-# - handle_task()            # 處理任務按鈕
-
-# ============ 錯誤處理 ============
-# - error_handler()          # 統一錯誤處理
-
-# ============ 主程式 ============
-# - post_init()              # Bot 啟動後初始化（通知管理員）
-# - main()                   # 程式入口
+```bash
+./scripts/install-service.sh
 ```
+
+### 常用指令
+
+```bash
+# 查看狀態
+sudo systemctl status telegram-bot
+
+# 查看日誌
+journalctl -u telegram-bot -f
+
+# 重啟服務
+sudo systemctl restart telegram-bot
+
+# 停止服務
+sudo systemctl stop telegram-bot
+```
+
+### 卸載服務
+
+```bash
+./scripts/uninstall-service.sh
+```
+
+## 可用指令
+
+| 指令 | 說明 |
+|------|------|
+| `/start` | 開始使用 Bot |
+| `/help` | 顯示幫助 |
+| `/menu` | 顯示功能選單 |
+| `/status` | 查看 Bot 狀態、用戶/群組 ID |
+| `/ping` | 檢查 Bot 是否在線 |
+
+## AI 功能
+
+### 一般對話
+
+直接發送訊息，Bot 會使用 Claude AI 回應。
+
+### 圖片生成
+
+發送類似以下訊息：
+- 「畫一隻貓」
+- 「生成一張日落風景圖」
+
+Bot 會使用 nanobanana MCP 工具生成圖片並發送。
+
+### 網頁搜尋
+
+發送類似以下訊息：
+- 「今天台北天氣如何」
+- 「搜尋 Python 教學」
+
+Bot 會使用 WebSearch 工具搜尋並回答。
+
+## 群組使用
+
+### 設定步驟
+
+1. 關閉隱私模式（見上方「建立 Telegram Bot」步驟）
+2. 將 Bot 加入群組
+3. 發送 `/status` 取得群組 ID
+4. 將群組 ID 加入 `.env` 的 `ALLOWED_GROUP_IDS`
+5. 重啟 Bot
+
+### 回應規則
+
+- Bot 只在被 **@提及** 或 **回覆 Bot 訊息** 時回應
+- 群組必須在白名單中
 
 ## 開發指南
 
 ### 新增指令
 
-1. 建立指令處理函式：
-
 ```python
 async def my_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """處理 /mycommand 指令"""
-    # 權限檢查
     if not check_permission(update, context):
         return
-
-    # 你的邏輯
     await update.message.reply_text("Hello!")
-```
 
-2. 在 `main()` 中註冊：
-
-```python
+# 在 main() 中註冊
 application.add_handler(CommandHandler("mycommand", my_command))
 ```
 
-### 新增按鈕
+### 新增 MCP 工具
 
-1. 在適當位置建立按鈕：
-
-```python
-keyboard = [
-    [InlineKeyboardButton("按鈕文字", callback_data="my_action")],
-]
-reply_markup = InlineKeyboardMarkup(keyboard)
-await update.message.reply_text("選擇：", reply_markup=reply_markup)
-```
-
-2. 在 `button_callback()` 中處理：
-
-```python
-elif callback_data == "my_action":
-    await my_action_handler(query)
-```
-
-### 整合 AI 處理
-
-修改 `process_message()` 函式：
-
-```python
-def process_message(text: str) -> str:
-    """處理用戶訊息的核心邏輯"""
-
-    # 呼叫 AI API（範例）
-    # response = call_ai_api(text)
-    # return response
-
-    # 或整合 ching-tech-os 的 AI 服務
-    # response = await ai_service.process(text)
-    # return response
-
-    return f"收到：{text}"
-```
-
-### 新增任務處理
-
-修改 `handle_task()` 函式：
-
-```python
-async def handle_task(query, callback_data: str) -> None:
-    """處理任務按鈕"""
-    task_num = callback_data.split("_")[1]
-
-    if task_num == "1":
-        # 任務 1 的邏輯
-        result = "任務 1 完成"
-    elif task_num == "2":
-        # 任務 2 的邏輯
-        result = "任務 2 完成"
-    else:
-        result = "未知任務"
-
-    await query.edit_message_text(result)
-```
-
-## 群組使用注意事項
-
-### 關閉隱私模式
-
-預設情況下，Bot 在群組中只能收到 `/command` 指令。若要讓 Bot 收到所有訊息（包含 @提及）：
-
-1. 找 [@BotFather](https://t.me/BotFather)
-2. 發送 `/setprivacy`
-3. 選擇你的 Bot
-4. 選擇 `Disable`
-5. **重新將 Bot 移出並加回群組**（設定才會生效）
-
-### 群組中的回應規則
-
-- Bot 只會在被 **@提及** 或 **回覆 Bot 訊息** 時回應
-- 群組必須在 `ALLOWED_GROUP_IDS` 白名單中
-- `/status` 指令可在任何群組中使用（方便取得群組 ID）
-
-## 整合到 ching-tech-os
-
-此專案設計為可輕鬆整合到 ching-tech-os 系統。整合步驟：
-
-### 方法一：作為獨立 Service
-
-將程式碼重構為 service 模組，放入 ching-tech-os：
-
-```
-backend/src/ching_tech_os/
-├── services/
-│   ├── telegram.py          # 訊息處理（參考 linebot.py）
-│   └── telegram_ai.py       # AI 整合（參考 linebot_ai.py）
-├── api/
-│   └── telegram_router.py   # Webhook API
-└── models/
-    └── telegram.py          # 資料模型
-```
-
-### 方法二：使用 Webhook
-
-改用 Webhook 模式，由 FastAPI 接收 Telegram 更新：
-
-```python
-# telegram_router.py
-@router.post("/webhook")
-async def telegram_webhook(request: Request):
-    update = Update.de_json(await request.json(), bot)
-    await application.process_update(update)
-    return {"ok": True}
-```
-
-### 環境變數整合
-
-在 ching-tech-os 的 `config.py` 中新增：
-
-```python
-# Telegram Bot
-telegram_bot_token: str = _get_env("TELEGRAM_BOT_TOKEN", required=True)
-telegram_allowed_users: str = _get_env("TELEGRAM_ALLOWED_USER_IDS", "")
-telegram_allowed_groups: str = _get_env("TELEGRAM_ALLOWED_GROUP_IDS", "")
-```
+1. 在 `.mcp.json` 中新增 server 配置
+2. 工具會自動被 Claude CLI 發現並使用
 
 ## 技術棧
 
-| 組件 | 版本 | 用途 |
-|------|------|------|
-| Python | 3.11+ | 程式語言 |
-| python-telegram-bot | 22.x | Telegram Bot API |
-| python-dotenv | 1.x | 環境變數管理 |
-| uv | - | 套件管理 |
+| 組件 | 用途 |
+|------|------|
+| Python 3.11+ | 程式語言 |
+| python-telegram-bot 22.x | Telegram Bot API |
+| Claude CLI | AI 對話處理 |
+| nanobanana-py | 圖片生成（MCP 工具）|
+| uv | 套件管理 |
 
 ## 參考資源
 
 - [python-telegram-bot 文件](https://docs.python-telegram-bot.org/)
 - [Telegram Bot API](https://core.telegram.org/bots/api)
-- [ching-tech-os Line Bot 實現](../ching-tech-os/backend/src/ching_tech_os/services/linebot.py)
+- [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli)
+- [nanobanana-py](https://pypi.org/project/nanobanana-py/)
 
 ## License
 

@@ -11,3 +11,6 @@ wheels/
 
 # Environment variables
 .env
+
+# MCP configuration (contains paths)
+.mcp.json

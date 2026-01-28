@@ -2,7 +2,8 @@ import os
 import logging
 from dotenv import load_dotenv
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import re
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot, InputFile
 from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
@@ -12,6 +13,8 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+
+from services.claude_agent import call_claude, ClaudeResponse
 
 # 載入環境變數
 load_dotenv()
@@ -28,6 +31,21 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_USER_IDS = os.getenv("ALLOWED_USER_IDS", "")
 ADMIN_USER_ID = os.getenv("ADMIN_USER_ID", "")
 ALLOWED_GROUP_IDS = os.getenv("ALLOWED_GROUP_IDS", "")
+
+# AI 設定
+AI_ENABLED = os.getenv("AI_ENABLED", "true").lower() == "true"
+AI_MODEL = os.getenv("AI_MODEL", "sonnet")
+AI_SYSTEM_PROMPT = os.getenv("AI_SYSTEM_PROMPT", """你是一個友善的 Telegram Bot 助手。
+請用繁體中文回答，保持簡潔有禮。""")
+AI_NOTIFY_TOOLS = os.getenv("AI_NOTIFY_TOOLS", "true").lower() == "true"
+AI_ALLOWED_TOOLS = os.getenv("AI_ALLOWED_TOOLS", "WebSearch,WebFetch,Read")
+
+
+def get_allowed_tools() -> list[str]:
+    """取得允許的 AI 工具列表"""
+    if not AI_ALLOWED_TOOLS:
+        return []
+    return [t.strip() for t in AI_ALLOWED_TOOLS.split(",") if t.strip()]
 
 # Bot 用戶名（啟動時會自動取得）
 BOT_USERNAME = None
@@ -195,19 +213,32 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     chat = update.effective_chat
 
+    # AI 狀態
+    ai_status = "✅ 啟用" if AI_ENABLED else "❌ 停用"
+
+    # 取得工具列表
+    tools = get_allowed_tools()
+    tools_str = ", ".join(tools) if tools else "無"
+
     status_text = (
         f"🤖 <b>Bot 狀態</b>\n\n"
         f"✅ Bot 運行中\n"
         f"👤 用戶: {user.first_name}\n"
         f"🆔 用戶 ID: <code>{user.id}</code>\n"
+        f"\n<b>AI 設定</b>\n"
+        f"🧠 AI: {ai_status}\n"
+        f"📦 模型: {AI_MODEL}\n"
+        f"🔔 Tool 通知: {'開' if AI_NOTIFY_TOOLS else '關'}\n"
+        f"🔧 工具: {tools_str}\n"
     )
 
     # 如果在群組中，顯示群組資訊
     if chat.type != "private":
         group_allowed = "✅" if is_group_allowed(chat.id) else "❌"
+        status_text += f"\n<b>群組資訊</b>\n"
         status_text += f"👥 群組: {chat.title}\n"
         status_text += f"🆔 群組 ID: <code>{chat.id}</code>\n"
-        status_text += f"📋 群組白名單: {group_allowed}\n"
+        status_text += f"📋 白名單: {group_allowed}\n"
 
     await update.message.reply_text(status_text, parse_mode="HTML")
 
@@ -261,19 +292,250 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # 顯示「正在輸入...」提示
     await context.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
 
-    # 這裡可以加入訊息處理邏輯
-    # 例如：呼叫 AI API、執行特定任務等
-    processed_response = process_message(text)
+    # 使用 AI 處理或簡單處理
+    if AI_ENABLED:
+        response, image_paths = await process_message_with_ai(text, chat.id, context.bot)
+    else:
+        response = process_message_simple(text)
+        image_paths = []
 
-    await update.message.reply_text(processed_response)
+    # 發送圖片（如果有）
+    for img_path in image_paths:
+        try:
+            with open(img_path, "rb") as img_file:
+                await update.message.reply_photo(photo=img_file)
+            logger.info(f"已發送圖片: {img_path}")
+        except Exception as e:
+            logger.error(f"發送圖片失敗 {img_path}: {e}")
+
+    # 發送文字回應
+    if response:
+        await update.message.reply_text(response)
 
 
-def process_message(text: str) -> str:
+def extract_image_paths_from_tool_calls(tool_calls: list) -> list[str]:
+    """從 tool_calls 中提取 nanobanana 生成的圖片路徑
+
+    nanobanana 的 tool output 格式:
+    [{"text": '{"success": true, "generatedFiles": [...]}', "type": "text"}]
     """
-    處理用戶訊息的核心邏輯
-    未來可以在這裡整合 AI 處理
+    import json
+
+    generated_files = []
+
+    if not tool_calls:
+        return generated_files
+
+    # nanobanana 工具名稱
+    nanobanana_tools = {
+        "mcp__nanobanana__generate_image",
+        "mcp__nanobanana__edit_image",
+    }
+
+    for tc in tool_calls:
+        if tc.name not in nanobanana_tools:
+            continue
+
+        try:
+            output = tc.output
+            if not output:
+                continue
+
+            # 解析 JSON
+            if isinstance(output, str):
+                output_data = json.loads(output)
+            else:
+                output_data = output
+
+            # 格式: [{"text": "{...}", "type": "text"}]
+            if isinstance(output_data, list) and len(output_data) > 0:
+                for item in output_data:
+                    if item.get("type") == "text" and item.get("text"):
+                        inner_data = json.loads(item["text"])
+                        if inner_data.get("success") and inner_data.get("generatedFiles"):
+                            generated_files.extend(inner_data["generatedFiles"])
+            # 格式: {"success": true, "generatedFiles": [...]}
+            elif isinstance(output_data, dict):
+                if output_data.get("success") and output_data.get("generatedFiles"):
+                    generated_files.extend(output_data["generatedFiles"])
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.warning(f"解析 nanobanana 輸出失敗: {e}")
+
+    # 去重複並過濾存在的檔案
+    seen = set()
+    unique_paths = []
+    for p in generated_files:
+        if p not in seen and os.path.exists(p):
+            seen.add(p)
+            unique_paths.append(p)
+
+    return unique_paths
+
+
+def extract_image_paths_from_text(text: str) -> list[str]:
+    """從文字中提取圖片路徑（備用方案）"""
+    # 匹配常見的圖片路徑模式
+    patterns = [
+        r'/tmp/[^\s\n\[\]()]+\.(?:jpg|jpeg|png|gif|webp)',
+        r'nanobanana-output/[^\s\n\[\]()]+\.(?:jpg|jpeg|png|gif|webp)',
+    ]
+
+    paths = []
+    for pattern in patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        paths.extend(matches)
+
+    # 處理相對路徑
+    result = []
+    for path in paths:
+        if path.startswith('/'):
+            result.append(path)
+        else:
+            full_path = f"/tmp/telegram-bot-cli/{path}"
+            result.append(full_path)
+
+    # 去重複並過濾出實際存在的檔案
+    seen = set()
+    unique_paths = []
+    for p in result:
+        if p not in seen and os.path.exists(p):
+            seen.add(p)
+            unique_paths.append(p)
+    return unique_paths
+
+
+async def process_message_with_ai(text: str, chat_id: int, bot: Bot) -> tuple[str, list[str]]:
+    """使用 Claude AI 處理訊息
+
+    Returns:
+        tuple[str, list[str]]: (回應文字, 圖片路徑列表)
     """
-    # 簡單的示範處理
+    # Tool 通知訊息 ID（用於更新同一條訊息）
+    notify_message_id = None
+    tool_status_lines = []
+
+    async def on_tool_start(tool_name: str, tool_input: dict):
+        """Tool 開始執行時的回調"""
+        nonlocal notify_message_id, tool_status_lines
+
+        if not AI_NOTIFY_TOOLS:
+            return
+
+        # 格式化輸入參數（簡短顯示）
+        input_str = ""
+        if tool_input:
+            # 只顯示前幾個參數
+            items = list(tool_input.items())[:2]
+            input_str = ", ".join(f"{k}={repr(v)[:30]}" for k, v in items)
+            if len(tool_input) > 2:
+                input_str += ", ..."
+
+        status_line = f"🔧 <code>{tool_name}</code>"
+        if input_str:
+            status_line += f"\n   └ {input_str}"
+        status_line += "\n   ⏳ 執行中..."
+
+        tool_status_lines.append({"name": tool_name, "status": "running", "line": status_line})
+
+        # 組合所有 tool 狀態
+        full_text = "🤖 <b>AI 處理中</b>\n\n" + "\n\n".join(t["line"] for t in tool_status_lines)
+
+        try:
+            if notify_message_id is None:
+                msg = await bot.send_message(
+                    chat_id=chat_id,
+                    text=full_text,
+                    parse_mode="HTML",
+                )
+                notify_message_id = msg.message_id
+            else:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=notify_message_id,
+                    text=full_text,
+                    parse_mode="HTML",
+                )
+        except Exception as e:
+            logger.warning(f"發送 tool 通知失敗: {e}")
+
+    async def on_tool_end(tool_name: str, result: dict):
+        """Tool 執行完成時的回調"""
+        nonlocal tool_status_lines
+
+        if not AI_NOTIFY_TOOLS:
+            return
+
+        duration_ms = result.get("duration_ms", 0)
+        duration_str = f"{duration_ms}ms" if duration_ms < 1000 else f"{duration_ms/1000:.1f}s"
+
+        # 更新對應 tool 的狀態
+        for tool in tool_status_lines:
+            if tool["name"] == tool_name and tool["status"] == "running":
+                # 更新為完成狀態
+                tool["status"] = "done"
+                tool["line"] = tool["line"].replace("⏳ 執行中...", f"✅ 完成 ({duration_str})")
+                break
+
+        # 更新訊息
+        full_text = "🤖 <b>AI 處理中</b>\n\n" + "\n\n".join(t["line"] for t in tool_status_lines)
+
+        try:
+            if notify_message_id:
+                await bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=notify_message_id,
+                    text=full_text,
+                    parse_mode="HTML",
+                )
+        except Exception as e:
+            logger.warning(f"更新 tool 通知失敗: {e}")
+
+    # 呼叫 Claude
+    result: ClaudeResponse = await call_claude(
+        prompt=text,
+        model=AI_MODEL,
+        system_prompt=AI_SYSTEM_PROMPT,
+        on_tool_start=on_tool_start,
+        on_tool_end=on_tool_end,
+        allowed_tools=get_allowed_tools(),
+    )
+
+    # 刪除 tool 通知訊息（如果有）
+    if notify_message_id and AI_NOTIFY_TOOLS:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=notify_message_id)
+        except Exception as e:
+            logger.warning(f"刪除 tool 通知失敗: {e}")
+
+    if result.success:
+        response = result.message
+
+        # 從 tool_calls 提取圖片路徑（優先）
+        image_paths = extract_image_paths_from_tool_calls(result.tool_calls)
+
+        # 備用：從回應文字提取
+        if not image_paths:
+            image_paths = extract_image_paths_from_text(response)
+
+        if image_paths:
+            logger.info(f"提取到 {len(image_paths)} 張圖片: {image_paths}")
+
+        # 如果有 tool 調用，附加統計
+        if result.tool_calls:
+            tool_summary = "\n".join(
+                f"• {t.name} ({t.duration_ms}ms)" for t in result.tool_calls
+            )
+            response += f"\n\n📊 使用了 {len(result.tool_calls)} 個工具:\n{tool_summary}"
+    else:
+        response = f"❌ AI 處理失敗: {result.error}"
+        image_paths = []
+
+    return response, image_paths
+
+
+def process_message_simple(text: str) -> str:
+    """簡單的訊息處理（不使用 AI）"""
     text_lower = text.lower()
 
     if "你好" in text or "hello" in text_lower or "hi" in text_lower:
@@ -286,8 +548,7 @@ def process_message(text: str) -> str:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return f"🕐 現在時間: {now}"
 
-    # 預設回應 - 未來可替換為 AI 回應
-    return f"📝 收到你的訊息：\n「{text}」\n\n（這裡未來可以接入 AI 處理）"
+    return f"📝 收到你的訊息：\n「{text}」\n\n（AI 未啟用）"
 
 
 # ============ 按鈕回調處理 ============

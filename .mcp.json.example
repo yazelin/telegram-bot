@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "nanobanana": {
+      "command": "bash",
+      "args": [
+        "-c",
+        "set -a && source /path/to/your/telegram-bot/.env && set +a && uvx nanobanana-py"
+      ]
+    }
+  }
+}
