@@ -129,10 +129,13 @@ nano .mcp.json
 ### 5. 啟動 Bot
 
 ```bash
-# 手動啟動
+# 手動啟動（Linux / macOS）
 ./scripts/start.sh
 
-# 或安裝為系統服務（開機自動啟動）
+# 手動啟動（Windows / 所有平台通用）
+uv run python main.py
+
+# 安裝為系統服務（僅限 Linux，開機自動啟動）
 ./scripts/install-service.sh
 ```
 
@@ -141,7 +144,9 @@ nano .mcp.json
 - **用戶 ID**：私訊 Bot 發送 `/status`（未授權用戶也可使用此指令查詢自己的 ID）
 - **群組 ID**：將 Bot 加入群組後發送 `/status`
 
-## 服務管理
+## 服務管理（僅限 Linux）
+
+> `scripts/` 下的腳本皆依賴 bash 和 systemd，僅支援 Linux。其他平台請直接使用 `uv run python main.py` 啟動。
 
 ### 安裝服務
 
