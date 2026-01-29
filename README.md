@@ -7,7 +7,7 @@
 - **AI 對話**：整合 Claude CLI，支援智能對話
 - **圖片生成**：透過 MCP 工具（nanobanana）生成圖片
 - **即時通知**：AI 處理時顯示 Tool 執行狀態
-- **權限控制**：用戶白名單、群組白名單
+- **權限控制**：用戶白名單（預設拒絕）、群組白名單
 - **群組支援**：需 @Bot 或回覆 Bot 才會回應
 - **服務管理**：支援 systemd 服務安裝
 
@@ -66,8 +66,8 @@ nano .env
 # Bot Token（必填）
 TELEGRAM_BOT_TOKEN=your_bot_token_here
 
-# 用戶白名單（選填，逗號分隔）
-# 留空 = 允許所有人
+# 用戶白名單（必填，逗號分隔）
+# 留空 = 拒絕所有人（但 /status 仍可查詢自己的 ID）
 ALLOWED_USER_IDS=123456789
 
 # 管理員 ID（選填，Bot 啟動時會收到通知）
@@ -138,7 +138,7 @@ nano .mcp.json
 
 ### 6. 取得 ID
 
-- **用戶 ID**：私訊 Bot 發送 `/status`
+- **用戶 ID**：私訊 Bot 發送 `/status`（未授權用戶也可使用此指令查詢自己的 ID）
 - **群組 ID**：將 Bot 加入群組後發送 `/status`
 
 ## 服務管理
@@ -178,7 +178,7 @@ sudo systemctl stop telegram-bot
 | `/start` | 開始使用 Bot |
 | `/help` | 顯示幫助 |
 | `/menu` | 顯示功能選單 |
-| `/status` | 查看 Bot 狀態、用戶/群組 ID |
+| `/status` | 查看 Bot 狀態、用戶/群組 ID（未授權用戶僅顯示 ID） |
 | `/ping` | 檢查 Bot 是否在線 |
 
 ## AI 功能
