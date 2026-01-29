@@ -81,9 +81,9 @@ def get_allowed_groups() -> set[int]:
 def is_user_allowed(user_id: int) -> bool:
     """檢查用戶是否被允許使用 bot"""
     allowed = get_allowed_users()
-    # 如果沒有設定白名單，則允許所有人
+    # 如果沒有設定白名單，則拒絕所有人
     if not allowed:
-        return True
+        return False
     return user_id in allowed
 
 
@@ -207,12 +207,21 @@ async def menu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """處理 /status 指令 (只檢查用戶權限，方便取得群組 ID)"""
+    """處理 /status 指令 (未授權用戶只顯示 ID，方便加入白名單)"""
     user = update.effective_user
-    if not is_user_allowed(user.id):
-        return
-
     chat = update.effective_chat
+
+    # 未授權用戶：只顯示自己的 ID
+    if not is_user_allowed(user.id):
+        status_text = (
+            f"🆔 你的用戶 ID: <code>{user.id}</code>\n\n"
+            f"⚠️ 你尚未被授權使用此 Bot。\n"
+            f"請將此 ID 提供給管理員以申請存取權限。"
+        )
+        if chat.type != "private":
+            status_text += f"\n\n👥 群組 ID: <code>{chat.id}</code>"
+        await update.message.reply_text(status_text, parse_mode="HTML")
+        return
 
     # AI 狀態
     ai_status = "✅ 啟用" if AI_ENABLED else "❌ 停用"
